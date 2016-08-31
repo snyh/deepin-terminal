@@ -8,11 +8,32 @@
 #include <fcntl.h>
 #include <sys/types.h>
 
+void feed(char* buf, int len);
+
 struct termios termp_vte;
 struct winsize slave_sz;
 
 int slave_fd = -1;
 int log_fd = -1;
+
+void make_raw_slave(int fd)
+{
+    struct termios raw;
+    raw.c_iflag &= ~(IGNBRK|BRKINT|PARMRK|ISTRIP
+                      |INLCR|IGNCR|ICRNL|IXON);
+    raw.c_oflag &= ~OPOST;
+    raw.c_lflag &= ~(ECHO|ECHONL|ICANON|ISIG|IEXTEN);
+    raw.c_cflag &= ~(CSIZE|PARENB);
+    raw.c_cflag |= CS8;
+
+
+    raw.c_cc[VMIN] = 1;
+    raw.c_cc[VTIME] = 0;
+    /*   raw.c_oflag |= OPOST; */
+
+    tcsetattr(fd, TCSAFLUSH, &raw);
+}
+
 
 int init_fd()
 {
@@ -31,6 +52,7 @@ int init_fd()
 
     tcgetattr(0, &termp_vte);
 
+    make_raw_slave(0);
 
     log_fd = open("/dev/shm/vte_slave.log", O_CREAT | O_RDWR | O_NONBLOCK | O_TRUNC, 0644);
 
@@ -48,12 +70,14 @@ gboolean read_and_write(int in_fd, GIOCondition cond, gpointer _out_fd)
     }
 
     int out_fd = GPOINTER_TO_INT(_out_fd);
+
     static char buf[1024];
     int r = 0;
     r = read(in_fd, buf, sizeof(buf));
     if (r == -1) {
         printf("COND:%d=%d SYNC: %d-->%d %d\n", cond,G_IO_IN, in_fd, out_fd, r);
     } else if (r > 0) {
+        feed(buf, r);
         write(out_fd, buf, r);
     }
     return TRUE;
@@ -134,7 +158,7 @@ void run_child(const char* ptsname)
 void init_signal()
 {
     signal(SIGWINCH, sync_win_sz);
-    signal(SIGINT, SIG_IGN);
+//    signal(SIGINT, SIG_IGN);
 }
 
 int main(int argc, char* argv[])
