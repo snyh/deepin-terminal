@@ -8,12 +8,13 @@
 #include <fcntl.h>
 #include <sys/types.h>
 
-void feed(char* buf, int len);
+void sync_output(int vte_fd, int master_fd);
 
-struct termios termp_vte;
-struct winsize slave_sz;
+static struct termios termp_vte;
 
-int slave_fd = -1;
+extern gboolean IN_RZ_MODE;
+
+int master_fd = -1;
 int log_fd = -1;
 
 void make_raw_slave(int fd)
@@ -26,10 +27,8 @@ void make_raw_slave(int fd)
     raw.c_cflag &= ~(CSIZE|PARENB);
     raw.c_cflag |= CS8;
 
-
     raw.c_cc[VMIN] = 1;
     raw.c_cc[VTIME] = 0;
-    /*   raw.c_oflag |= OPOST; */
 
     tcsetattr(fd, TCSAFLUSH, &raw);
 }
@@ -37,13 +36,15 @@ void make_raw_slave(int fd)
 
 int init_fd()
 {
-    int master_fd = open("/dev/ptmx", O_RDWR | O_NONBLOCK);
+    master_fd = open("/dev/ptmx", O_RDWR);
 
-    if (master_fd == -1)
+    if (master_fd == -1) {
         printf("E: INIT_FD\n");
+        exit(-2);
+    }
 
     if (!isatty(0)) {
-        printf("E: vte_slave_fd\n");
+        printf("E: vte fd\n");
         exit(-2);
     }
 
@@ -59,44 +60,65 @@ int init_fd()
     return master_fd;
 }
 
-
-gboolean read_and_write(int in_fd, GIOCondition cond, gpointer _out_fd)
+void set_rz_fd()
 {
-    gboolean eof = cond & G_IO_HUP;
+    signal(SIGINT,SIG_DFL);
+    signal(SIGWINCH,SIG_DFL);
 
-	if (cond & (G_IO_IN ) == 0) {
-        printf("HEHE>>>>>\n");
-        return FALSE;
-    }
-
-    int out_fd = GPOINTER_TO_INT(_out_fd);
-
-    static char buf[1024];
-    int r = 0;
-    r = read(in_fd, buf, sizeof(buf));
-    if (r == -1) {
-        printf("COND:%d=%d SYNC: %d-->%d %d\n", cond,G_IO_IN, in_fd, out_fd, r);
-    } else if (r > 0) {
-        feed(buf, r);
-        write(out_fd, buf, r);
-    }
-    return TRUE;
+    dup2(master_fd, 0);
+    dup2(master_fd, 1);
+    dup2(log_fd, 2);
 }
 
-void sync_output(int vte_fd, int master_fd)
-{
-    g_unix_fd_add(vte_fd, G_IO_IN,
-                  (GUnixFDSourceFunc)read_and_write, GINT_TO_POINTER(master_fd));
 
-    g_unix_fd_add(master_fd, G_IO_IN,
-                  (GUnixFDSourceFunc)read_and_write, GINT_TO_POINTER(vte_fd));
+
+void enter_rz_mode()
+{
+    IN_RZ_MODE = TRUE;
+    printf("IN RZ MODE！！！\n");
+
+    struct termios saved_term;
+    tcgetattr(master_fd, &saved_term);
+
+    make_raw_slave(master_fd);
+
+    char* argv[] = {"/usr/bin/rz", "-b", 0};
+    GError* err = NULL;
+    gint status;
+    if (!g_spawn_sync(
+        0, argv, 0,
+        0, set_rz_fd, 0,
+        0, 0,
+        &status, &err)) {
+        printf("E: enter_rz_mode %s\n", err->message);
+        g_error_free(err);
+        exit(-3);
+    }
+    if (!g_spawn_check_exit_status(status, &err)) {
+        char c = 24;
+        tcflush(master_fd, TCIOFLUSH);
+        for (int i = 0;i < 99;i++)
+        {
+            write(master_fd, &c, 1);
+            tcdrain(master_fd);
+        }
+        printf("Fatal RZ MODE！！！%d->%s\n", status, err->message);
+        g_error_free(err);
+    }
+    tcsetattr(master_fd, TCSANOW, &termp_vte);
+
+    const char msg[] = "\r\n";
+    write(master_fd, msg, sizeof(msg));
+
+    IN_RZ_MODE = FALSE;
 }
 
-static void set_pty_fd(void* pts_path)
+static void set_shell_fd(void* pts_path)
 {
-    int fd = open((char*)pts_path, O_RDWR | O_NONBLOCK);
+    int fd = open((char*)pts_path, O_RDWR);
 
     setsid();
+
     if (ioctl(fd, TIOCSCTTY, 0) < 0) {
         printf("E: TIOCSCTTY\n");
     }
@@ -123,55 +145,59 @@ void when_child_exit(GPid pid, gint status, gpointer no_used)
 
 void sync_win_sz()
 {
-    if (slave_fd == -1) {
-        return;
-    }
-    int fd = slave_fd;
     struct winsize sz;
     ioctl(0, TIOCGWINSZ, &sz);
-    ioctl(fd, TIOCSWINSZ, &sz);
-    kill(tcgetsid(fd), SIGWINCH);
+    ioctl(master_fd, TIOCSWINSZ, &sz);
+
+    kill(tcgetsid(master_fd), SIGWINCH);
     return;
 }
 
-void run_child(const char* ptsname)
+void run_shell(const char* ptsname)
 {
-    slave_fd = open(ptsname, O_RDWR | O_NOCTTY);
-
     char* argv[] = {"/bin/bash", "-l", 0};
+//    char* argv[] = {"/usr/bin/sz", "-b", "wtmp", 0};
     GError* err = NULL;
     GPid pid;
     if (!g_spawn_async(
-        0, argv, 0,
-        G_SPAWN_DO_NOT_REAP_CHILD, set_pty_fd, (void*)ptsname,
+        "/dev/shm/", argv, 0,
+        G_SPAWN_DO_NOT_REAP_CHILD, set_shell_fd, (void*)ptsname,
         &pid, &err)) {
-        dprintf(log_fd, "E: run_child %s\n", err->message);
+        dprintf(log_fd, "E: run_shell %s\n", err->message);
         g_error_free(err);
         exit(-3);
     }
     g_child_watch_add(pid, when_child_exit, 0);
 
     dprintf(log_fd, "PP:run child %d at %s \n", pid, ptsname);
+
+
 }
 
+void reset_term()
+{
+    tcsetattr(0, TCSANOW, &termp_vte);
+}
 
 void init_signal()
 {
     signal(SIGWINCH, sync_win_sz);
-//    signal(SIGINT, SIG_IGN);
+    signal(SIGINT, SIG_IGN);
+
+    atexit(reset_term);
 }
+
 
 int main(int argc, char* argv[])
 {
-    int master_fd = init_fd();
-    dup2(0, 77);
-    int vte_fd = 77;
-
+    init_fd();
+    atexit(reset_term);
     init_signal();
+    sync_win_sz();
 
-    sync_output(vte_fd, master_fd);
+    sync_output(0, master_fd);
 
-    run_child(ptsname(master_fd));
+    run_shell(ptsname(master_fd));
 
     loop = g_main_loop_new(0, TRUE);
     g_main_loop_run(loop);

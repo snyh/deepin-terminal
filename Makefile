@@ -1,4 +1,7 @@
-all: main
+slave-deps = glib-2.0
+slave-binary: $(wildcard slave_control/*.c)
+	gcc $^ -o slave `pkg-config --libs --cflags $(slave-deps)` -lutil
+
 main: ./lib/animation.vala \
       ./lib/config.vala \
       ./lib/constant.vala \
