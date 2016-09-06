@@ -10,4 +10,6 @@ void quit_loop();
 
 gboolean filter_input(int in_fd, GIOCondition cond, gpointer user_data);
 
+gpointer get_dbus_proxy();
+
 #endif

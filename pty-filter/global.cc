@@ -1,6 +1,7 @@
 #include <sys/types.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <unistd.h>
 
 #include "global.h"
 #include "context.h"
@@ -20,4 +21,22 @@ void run_loop()
 void quit_loop()
 {
     g_main_loop_quit(loop);
+}
+
+
+extern "C" {
+    void dbus_init(gpointer, const char*);
+    gpointer pty_filter_proxy_new();
+};
+
+gpointer get_dbus_proxy()
+{
+    static volatile gpointer proxy = 0;
+    if (g_once_init_enter(&proxy)) {
+        char* addr = g_strdup_printf("com.deepin.terminal.ptyfilter-%d", getpid());
+        proxy = pty_filter_proxy_new();
+        dbus_init(proxy, addr);
+        g_free(addr);
+    }
+    return proxy;
 }
