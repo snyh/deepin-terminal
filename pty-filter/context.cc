@@ -14,7 +14,6 @@ Matcher::Matcher(const char* fp, size_t size)
 Matcher::Status Matcher::Check(char d)
 {
     extern int log_fd;
-    dprintf(log_fd, "%d ?=? %d\n", d, m_fp[m_pos]);
     if (d == m_fp[m_pos])
         enter_maybe();
     else

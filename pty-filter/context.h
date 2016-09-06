@@ -1,10 +1,11 @@
 #ifndef _STREAM_CONTEXT_
 #define _STREAM_CONTEXT_
 
+#include <cstdlib>
 #include <vector>
 
 const char SZ_START_FP[] = {0162, 0172, 015, 052, 052, 030, 0102, 060, 060, 060, 060, 060, 060, 060, 060, 060};
-const char RZ_START_FP[] = {052,  052,  030, 102, 060, 061, 060,  060, 060, 060, 060, 060, 062, 063, 0142, 0145};
+const char RZ_START_FP[] = {052,  052,  030, 0102, 060, 061, 060, 060, 060, 060, 060, 060, 062, 063, 0142, 0145};
 
 class Matcher {
 public:
